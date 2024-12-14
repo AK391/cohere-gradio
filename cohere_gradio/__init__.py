@@ -1,5 +1,5 @@
 import os
-from openai import OpenAI
+import cohere
 import gradio as gr
 from typing import Callable
 import base64
@@ -10,17 +10,18 @@ __version__ = "0.0.3"
 def get_fn(model_name: str, preprocess: Callable, postprocess: Callable, api_key: str):
     def fn(message, history):
         inputs = preprocess(message, history)
-        client = OpenAI(api_key=api_key)
-        completion = client.chat.completions.create(
+        client = cohere.Client(api_key=api_key)
+        stream = client.chat_stream(
             model=model_name,
-            messages=inputs["messages"],
-            stream=True,
+            message=inputs["message"],
+            chat_history=inputs["chat_history"],
         )
         response_text = ""
-        for chunk in completion:
-            delta = chunk.choices[0].delta.content or ""
-            response_text += delta
-            yield postprocess(response_text)
+        for chunk in stream:
+            if chunk.event_type == "text-generation":
+                delta = chunk.text
+                response_text += delta
+                yield postprocess(response_text)
 
     return fn
 
@@ -41,18 +42,17 @@ def handle_user_msg(message: str):
                 encoded_str = get_image_base64(message["files"][-1], ext)
             else:
                 raise NotImplementedError(f"Not supported file type {ext}")
-            content = [
-                    {"type": "text", "text": message["text"]},
+            return {
+                "message": message["text"],
+                "attachments": [
                     {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": encoded_str,
-                        }
-                    },
+                        "source": encoded_str,
+                        "type": "image",
+                    }
                 ]
+            }
         else:
-            content = message["text"]
-        return content
+            return message["text"]
     else:
         raise NotImplementedError
 
@@ -63,21 +63,24 @@ def get_interface_args(pipeline):
         outputs = None
 
         def preprocess(message, history):
-            messages = []
+            chat_history = []
             files = None
             for user_msg, assistant_msg in history:
                 if assistant_msg is not None:
-                    messages.append({"role": "user", "content": handle_user_msg(user_msg)})
-                    messages.append({"role": "assistant", "content": assistant_msg})
+                    chat_history.append({"role": "USER", "message": handle_user_msg(user_msg)})
+                    chat_history.append({"role": "ASSISTANT", "message": assistant_msg})
                 else:
                     files = user_msg
             if type(message) is str and files is not None:
-                message = {"text":message, "files":files}
+                message = {"text": message, "files": files}
             elif type(message) is dict and files is not None:
                 if message["files"] is None or len(message["files"]) == 0:
                     message["files"] = files
-            messages.append({"role": "user", "content": handle_user_msg(message)})
-            return {"messages": messages}
+            
+            return {
+                "message": handle_user_msg(message),
+                "chat_history": chat_history
+            }
 
         postprocess = lambda x: x
     else:
@@ -94,15 +97,15 @@ def get_pipeline(model_name):
 
 def registry(name: str, token: str | None = None, **kwargs):
     """
-    Create a Gradio Interface for a model on OpenAI.
+    Create a Gradio Interface for a model on Cohere.
 
     Parameters:
-        - name (str): The name of the OpenAI model.
-        - token (str, optional): The API key for OpenAI.
+        - name (str): The name of the Cohere model.
+        - token (str, optional): The API key for Cohere.
     """
-    api_key = token or os.environ.get("OPENAI_API_KEY")
+    api_key = token or os.environ.get("COHERE_API_KEY")
     if not api_key:
-        raise ValueError("OPENAI_API_KEY environment variable is not set.")
+        raise ValueError("COHERE_API_KEY environment variable is not set.")
 
     pipeline = get_pipeline(name)
     inputs, outputs, preprocess, postprocess = get_interface_args(pipeline)

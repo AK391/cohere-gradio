@@ -1,7 +1,7 @@
 import gradio as gr
-import openai_gradio
+import cohere_gradio
 
 gr.load(
-    name='gpt-4o-2024-11-20',
-    src=openai_gradio.registry,
+    name='command-r7b-12-2024',
+    src=cohere_gradio.registry,
 ).launch()
